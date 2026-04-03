@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>SNAKE</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #0f0f23;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      touch-action: none;
+      font-family: 'Courier New', Courier, monospace;
+      color: #e2e8f0;
+      user-select: none;
+    }
+    #wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #score-bar {
+      display: flex;
+      gap: 24px;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    #score-bar .score { color: #fbbf24; }
+    #score-bar .best { color: #94a3b8; }
+    canvas {
+      display: block;
+      cursor: pointer;
+      image-rendering: crisp-edges;
+      border: 2px solid #252540;
+      border-radius: 4px;
+      max-width: 100%;
+    }
+    #controls-hint {
+      font-size: 14px;
+      color: #64748b;
+    }
+    /* CHUNK 6: overlay for start/gameover states */
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      pointer-events: none;
+      background: rgba(15, 15, 35, 0.75);
+    }
+    #overlay h1 {
+      font-size: 36px;
+      color: #4ade80;
+      text-shadow: 0 0 20px #4ade8066;
+    }
+    #overlay p {
+      font-size: 16px;
+      color: #94a3b8;
+    }
+    #overlay.hidden { display: none; }
+  </style>
+</head>
+<body>
+<div id="wrapper">
+  <div id="score-bar">
+    <span class="score">SCORE: <span id="score-val">0</span></span>
+    <span class="best">BEST: <span id="best-val">0</span></span>
+  </div>
+  <div style="position:relative;">
+    <canvas id="c" width="400" height="400"></canvas>
+    <!-- CHUNK 6: Start & Gameover overlays rendered on canvas -->
+    <div id="overlay">
+      <h1 id="overlay-title">SNAKE</h1>
+      <p id="overlay-sub">Press SPACE or click to start</p>
+    </div>
+  </div>
+  <div id="controls-hint">← ↑ ↓ → or WASD to move</div>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // ─── Constants ────────────────────────────────────────────────────────────
+  const GRID   = 20;   // cells
+  const CELL   = 20;   // px per cell
+  const W      = GRID * CELL; // 400
+  const H      = GRID * CELL; // 400
+  const INIT_SPEED  = 120; // ms/tick
+  const MIN_SPEED   = 60;
+  const SPEED_DEC   = 2;   // ms faster per food
+  const SCORE_FOOD  = 10;
+
+  // Colors
+  const C_BG      = '#1a1a2e';
+  const C_GRID    = '#252540';
+  const C_HEAD    = '#4ade80';
+  const C_BODY    = '#22c55e';
+  const C_TAIL    = '#15803d';
+  const C_FOOD    = '#ef4444';
+
+  // ─── Canvas Setup ─────────────────────────────────────────────────────────
+  const canvas = document.getElementById('c');
+  const ctx    = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score-val');
+  const bestEl  = document.getElementById('best-val');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlay-title');
+  const overlaySub   = document.getElementById('overlay-sub');
+
+  // ─── Game State (CHUNK 6) ──────────────────────────────────────────────────
+  let state = 'start'; // 'start' | 'playing' | 'gameover'
+  let score = 0;
+  let highScore = parseInt(localStorage.getItem('snakeBest') || '0', 10);
+  bestEl.textContent = highScore;
+
+  // ─── Snake State (CHUNK 1, 2) ──────────────────────────────────────────────
+  // snake[0] = head
+  let snake = [];
+  let direction = 'right';
+  let nextDirection = 'right';
+  let growthPending = 0;
+
+  // ─── Food State (CHUNK 3) ─────────────────────────────────────────────────
+  let food = { x: 0, y: 0 };
+
+  // ─── Loop State ───────────────────────────────────────────────────────────
+  let lastTick = 0;
+  let tickInterval = INIT_SPEED;
+  let animFrameId = null;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 1: Canvas rendering + game loop
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function drawGrid() {
+    ctx.strokeStyle = C_GRID;
+    ctx.lineWidth = 0.5;
+    for (let x = 0; x <= W; x += CELL) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y <= H; y += CELL) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+  }
+
+  function drawFood() {
+    const cx = food.x * CELL + CELL / 2;
+    const cy = food.y * CELL + CELL / 2;
+    const r  = CELL / 2 - 2;
+    ctx.fillStyle = C_FOOD;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    // subtle pulse glow
+    ctx.shadowColor = C_FOOD;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  function drawSnake() {
+    const len = snake.length;
+    snake.forEach((seg, i) => {
+      const x = seg.x * CELL + 1;
+      const y = seg.y * CELL + 1;
+      const s = CELL - 2;
+      if (i === 0) {
+        // head
+        ctx.fillStyle = C_HEAD;
+        ctx.beginPath();
+        ctx.roundRect(x, y, s, s, 4);
+        ctx.fill();
+        // eyes
+        ctx.fillStyle = '#0f0f23';
+        const eyeR = 2;
+        let e1x, e1y, e2x, e2y;
+        if (direction === 'right')  { e1x = x+s-5; e1y = y+4;  e2x = x+s-5; e2y = y+s-6; }
+        if (direction === 'left')    { e1x = x+3;   e1y = y+4;  e2x = x+3;   e2y = y+s-6; }
+        if (direction === 'up')      { e1x = x+4;   e1y = y+3;  e2x = x+s-6; e2y = y+3;   }
+        if (direction === 'down')    { e1x = x+4;   e1y = y+s-5; e2x = x+s-6; e2y = y+s-5; }
+        ctx.beginPath(); ctx.arc(e1x, e1y, eyeR, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(e2x, e2y, eyeR, 0, Math.PI*2); ctx.fill();
+      } else if (i === len - 1) {
+        // tail
+        ctx.fillStyle = C_TAIL;
+        ctx.beginPath();
+        ctx.roundRect(x, y, s, s, 3);
+        ctx.fill();
+      } else {
+        // body gradient
+        const t = i / len;
+        ctx.fillStyle = lerpColor(C_BODY, C_TAIL, t);
+        ctx.beginPath();
+        ctx.roundRect(x, y, s, s, 3);
+        ctx.fill();
+      }
+    });
+  }
+
+  function lerpColor(a, b, t) {
+    const pa = parseInt(a.slice(1), 16);
+    const pb = parseInt(b.slice(1), 16);
+    const ar = (pa >> 16) & 0xff, ag = (pa >> 8) & 0xff, ab = pa & 0xff;
+    const br = (pb >> 16) & 0xff, bg = (pb >> 8) & 0xff, bb = pb & 0xff;
+    const rr = Math.round(ar + (br - ar) * t);
+    const rg = Math.round(ag + (bg - ag) * t);
+    const rb = Math.round(ab + (bb - ab) * t);
+    return `rgb(${rr},${rg},${rb})`;
+  }
+
+  function render() {
+    ctx.fillStyle = C_BG;
+    ctx.fillRect(0, 0, W, H);
+    drawGrid();
+    drawFood();
+    drawSnake();
+  }
+
+  function gameLoop(timestamp) {
+    animFrameId = requestAnimationFrame(gameLoop);
+    if (state !== 'playing') return;
+    if (timestamp - lastTick < tickInterval) return;
+    lastTick = timestamp;
+
+    // CHUNK 2: apply queued direction
+    direction = nextDirection;
+
+    // CHUNK 2: move snake
+    const head = { ...snake[0] };
+    if (direction === 'right') head.x++;
+    if (direction === 'left')  head.x--;
+    if (direction === 'up')    head.y--;
+    if (direction === 'down')  head.y++;
+
+    // CHUNK 4: wall collision
+    if (head.x < 0 || head.x >= GRID || head.y < 0 || head.y >= GRID) {
+      triggerGameOver(); return;
+    }
+
+    // CHUNK 4: self collision
+    if (snake.some(s => s.x === head.x && s.y === head.y)) {
+      triggerGameOver(); return;
+    }
+
+    snake.unshift(head);
+
+    // CHUNK 3: food check
+    if (head.x === food.x && head.y === food.y) {
+      growthPending++;
+      score += SCORE_FOOD;
+      scoreEl.textContent = score;
+      scoreFlash();
+      spawnFood();
+      tickInterval = Math.max(MIN_SPEED, tickInterval - SPEED_DEC);
+    }
+
+    if (growthPending > 0) {
+      growthPending--;
+    } else {
+      snake.pop();
+    }
+
+    render();
+  }
+
+  function scoreFlash() {
+    scoreEl.style.transform = 'scale(1.4)';
+    setTimeout(() => { scoreEl.style.transform = 'scale(1)'; }, 150);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 3: Food spawning + eating + growth
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function spawnFood() {
+    const occupied = new Set(snake.map(s => `${s.x},${s.y}`));
+    let pos;
+    do {
+      pos = {
+        x: Math.floor(Math.random() * GRID),
+        y: Math.floor(Math.random() * GRID)
+      };
+    } while (occupied.has(`${pos.x},${pos.y}`));
+    food = pos;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 4: Collision detection (walls + self) — inline above in gameLoop
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 5: Scoring + localStorage
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function saveHighScore() {
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem('snakeBest', highScore);
+      bestEl.textContent = highScore;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 6: Game states: start, playing, gameover
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function startGame() {
+    // reset snake: 3 cells, starting at (5,10),(6,10),(7,10), head at (7,10) moving right
+    snake = [
+      { x: 7, y: 10 },
+      { x: 6, y: 10 },
+      { x: 5, y: 10 }
+    ];
+    direction      = 'right';
+    nextDirection  = 'right';
+    growthPending  = 0;
+    score          = 0;
+    scoreEl.textContent = 0;
+    tickInterval   = INIT_SPEED;
+    spawnFood();
+    state = 'playing';
+    overlay.classList.add('hidden');
+    lastTick = performance.now();
+    if (!animFrameId) animFrameId = requestAnimationFrame(gameLoop);
+  }
+
+  function triggerGameOver() {
+    state = 'gameover';
+    saveHighScore();
+    overlayTitle.textContent = 'GAME OVER';
+    overlaySub.innerHTML = `Score: ${score} &nbsp; Best: ${highScore}<br>Press SPACE or click to restart`;
+    overlay.classList.remove('hidden');
+  }
+
+  function initStartScreen() {
+    bestEl.textContent = highScore;
+    overlay.classList.remove('hidden');
+    overlayTitle.textContent = 'SNAKE';
+    overlaySub.textContent = 'Press SPACE or click to start';
+    state = 'start';
+    // draw idle snake on canvas
+    snake = [{x:10,y:10},{x:9,y:10},{x:8,y:10}];
+    direction = 'right';
+    spawnFood();
+    render();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 7: Controls: arrows, WASD, space, click/touch
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const DIR_MAP = {
+    ArrowUp: 'up',    KeyW: 'up',
+    ArrowDown: 'down',  KeyS: 'down',
+    ArrowLeft: 'left',  KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right',
+  };
+  const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      e.preventDefault();
+      if (state !== 'playing') { startGame(); return; }
+    }
+    const dir = DIR_MAP[e.code];
+    if (dir && state === 'playing') {
+      e.preventDefault();
+      if (dir !== OPPOSITE[direction]) nextDirection = dir;
+    }
+  });
+
+  canvas.addEventListener('click', () => {
+    if (state !== 'playing') startGame();
+  });
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (state !== 'playing') startGame();
+  }, { passive: false });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHUNK 8: Game over screen + restart — handled in triggerGameOver()
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ─── Boot ──────────────────────────────────────────────────────────────────
+  initStartScreen();
+  animFrameId = requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
